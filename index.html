@@ -7,6 +7,15 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.0.4/tesseract.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+  window.addEventListener('DOMContentLoaded', function(){
+    if(window.pdfjsLib){
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    }
+  });
+</script>
 <style>
   :root{
     --azul:#00528F;
@@ -232,7 +241,7 @@
       <span class="x" id="fileRemove">✕</span>
     </div>
     <div id="extracting" class="extracting" style="display:none;">
-      <div class="spinner"></div> Detectando datos de la factura…
+      <div class="spinner"></div> Leyendo la factura… puede tardar unos segundos
     </div>
 
     <button class="manual-link" id="manualLink" style="display:none;margin-bottom:14px;">o cargar los datos a mano →</button>
@@ -323,7 +332,7 @@ let currentFile = null; // {base64, mediaType, isPdf, name}
 
 // Tu Google Sheet es la única fuente de verdad: estos valores por defecto
 // apuntan a tu Apps Script. Se pueden cambiar desde "⚙ Sincronización".
-const DEFAULT_SYNC_URL = 'https://script.google.com/macros/s/AKfycbxyBB4jmNUfBrKHuQRka9BxHz4W3sfrGK5KcMi7b5ho9wSxf_RqqrgT8obwrR4OIsw-KQ/exec';
+const DEFAULT_SYNC_URL = 'https://script.google.com/macros/s/AKfycbxLdQvQloOLR4lVPFtaiGhfgmM0XaPDAr-MHgheJ3wQayJUzyMiqstl5u83OGpd51Nf4w/exec';
 const DEFAULT_TOKEN = 'uakevin';
 let syncUrl = localStorage.getItem('gastosUA_syncUrl') || DEFAULT_SYNC_URL;
 let syncToken = localStorage.getItem('gastosUA_syncToken') || DEFAULT_TOKEN;
@@ -623,35 +632,24 @@ function handleFile(file){
 async function extractData(){
   extractingEl.style.display='flex';
   invoiceForm.style.display='none';
+  errEl.style.display='none';
   try{
-    const content = [];
+    let imageDataUrl;
     if(currentFile.isPdf){
-      content.push({type:'document', source:{type:'base64', media_type:'application/pdf', data: currentFile.base64}});
+      imageDataUrl = await pdfFirstPageToImage(currentFile.base64);
     }else{
-      content.push({type:'image', source:{type:'base64', media_type: currentFile.mediaType, data: currentFile.base64}});
+      imageDataUrl = 'data:' + currentFile.mediaType + ';base64,' + currentFile.base64;
     }
-    content.push({type:'text', text: 'Analizá esta factura y devolvé SOLO un JSON valido, sin texto adicional y sin bloques de markdown, con esta forma exacta: {"razon_social": string o null, "monto": numero decimal sin separadores de miles o null, "fecha": "AAAA-MM-DD" o null (fecha de emision de la factura), "comp_nro": string o null (numero de comprobante, el que figura como "Comp. Nro" u similar)}. Si un dato no se puede determinar con certeza, usa null en ese campo.'});
-
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({
-        model:'claude-sonnet-4-6',
-        max_tokens:1000,
-        messages:[{role:'user', content}]
-      })
-    });
-    const data = await response.json();
-    const textBlock = (data.content||[]).find(b=>b.type==='text');
-    let parsed = {};
-    if(textBlock){
-      const clean = textBlock.text.replace(/```json|```/g,'').trim();
-      try{ parsed = JSON.parse(clean); }catch(e){ parsed = {}; }
+    const result = await Tesseract.recognize(imageDataUrl, 'spa');
+    const parsed = parseInvoiceText(result.data.text);
+    document.getElementById('fRazon').value = parsed.razonSocial || '';
+    document.getElementById('fMonto').value = parsed.monto !== null ? parsed.monto : '';
+    document.getElementById('fFecha').value = parsed.fecha || '';
+    document.getElementById('fComp').value = parsed.compNro || '';
+    if(!parsed.razonSocial && parsed.monto===null && !parsed.fecha && !parsed.compNro){
+      errEl.textContent = 'No pudimos detectar los datos con precisión en esta factura. Revisá y completá lo que falte.';
+      errEl.style.display='block';
     }
-    document.getElementById('fRazon').value = parsed.razon_social || '';
-    document.getElementById('fMonto').value = parsed.monto || '';
-    document.getElementById('fFecha').value = (parsed.fecha && /^\d{4}-\d{2}-\d{2}$/.test(parsed.fecha)) ? parsed.fecha : '';
-    document.getElementById('fComp').value = parsed.comp_nro || '';
   }catch(e){
     errEl.textContent = 'No pudimos leer la factura automáticamente. Completá los datos a mano.';
     errEl.style.display='block';
@@ -659,6 +657,57 @@ async function extractData(){
     extractingEl.style.display='none';
     invoiceForm.style.display='block';
   }
+}
+
+async function pdfFirstPageToImage(base64){
+  const raw = atob(base64);
+  const bytes = new Uint8Array(raw.length);
+  for(let i=0;i<raw.length;i++) bytes[i] = raw.charCodeAt(i);
+  const pdf = await pdfjsLib.getDocument({data: bytes}).promise;
+  const page = await pdf.getPage(1);
+  const viewport = page.getViewport({scale: 2.2});
+  const canvas = document.createElement('canvas');
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  const ctx = canvas.getContext('2d');
+  await page.render({canvasContext: ctx, viewport: viewport}).promise;
+  return canvas.toDataURL('image/png');
+}
+
+function parseArgNumber(s){
+  const clean = s.replace(/\./g,'').replace(',', '.');
+  const n = parseFloat(clean);
+  return isNaN(n) ? null : n;
+}
+
+function parseInvoiceText(text){
+  const result = {razonSocial:null, monto:null, fecha:null, compNro:null};
+
+  // Comp. Nro (ej: "Comp. Nro: 00000065" o "0001-00000065")
+  let m = text.match(/comp\.?\s*n[roº°]?\.?\s*:?\s*([0-9]{3,5}[\s\-]?[0-9]{4,8})/i);
+  if(!m) m = text.match(/([0-9]{4,5}\s*-\s*[0-9]{6,8})/);
+  if(m) result.compNro = m[1].replace(/\s+/g,'');
+
+  // Fecha (dd/mm/yyyy o dd-mm-yyyy)
+  m = text.match(/(\d{2})[\/\-.](\d{2})[\/\-.](\d{4})/);
+  if(m) result.fecha = m[3]+'-'+m[2]+'-'+m[1];
+
+  // Monto: busca "Total" seguido de un número, se queda con la última aparición
+  const totalMatches = [...text.matchAll(/total[^0-9]{0,15}([\d]{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?)/gi)];
+  if(totalMatches.length){
+    result.monto = parseArgNumber(totalMatches[totalMatches.length-1][1]);
+  }
+
+  // Razón social: primera línea con texto "razonable" que no sea un rótulo típico de factura
+  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
+  for(const line of lines){
+    if(line.length>4 && line.length<60 && /[a-záéíóúñ]/i.test(line) &&
+       !/factura|comprobante|original|duplicado|cuit|iva|fecha|c\.?u\.?i\.?t/i.test(line)){
+      result.razonSocial = line;
+      break;
+    }
+  }
+  return result;
 }
 
 invoiceForm.addEventListener('submit', async (e)=>{
