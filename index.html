@@ -640,8 +640,22 @@ async function extractData(){
     }else{
       imageDataUrl = 'data:' + currentFile.mediaType + ';base64,' + currentFile.base64;
     }
-    const result = await Tesseract.recognize(await preprocessImage(imageDataUrl), 'spa');
-    const parsed = parseInvoiceText(result.data.text);
+
+    // Recorte de la zona superior izquierda: ahí siempre está la razón social
+    // del proveedor en este tipo de comprobante (encabezado, antes de la caja COD/letra).
+    const croppedRaw = await cropRegion(imageDataUrl, 0, 0, 0.65, 0.10);
+
+    const [fullResult, cropResult] = await Promise.all([
+      Tesseract.recognize(await preprocessImage(imageDataUrl), 'spa'),
+      croppedRaw ? Tesseract.recognize(await preprocessImage(croppedRaw), 'spa') : Promise.resolve(null)
+    ]);
+
+    const parsed = parseInvoiceText(fullResult.data.text);
+    if(cropResult){
+      const razonFromCrop = extractRazonFromCropText(cropResult.data.text);
+      if(razonFromCrop) parsed.razonSocial = razonFromCrop;
+    }
+
     document.getElementById('fRazon').value = parsed.razonSocial || '';
     document.getElementById('fMonto').value = parsed.monto !== null ? parsed.monto : '';
     document.getElementById('fFecha').value = parsed.fecha || '';
@@ -657,6 +671,39 @@ async function extractData(){
     extractingEl.style.display='none';
     invoiceForm.style.display='block';
   }
+}
+
+function cropRegion(dataUrl, xPct, yPct, wPct, hPct){
+  return new Promise((resolve)=>{
+    const img = new Image();
+    img.onload = ()=>{
+      try{
+        const sx = Math.floor(img.width * xPct);
+        const sy = Math.floor(img.height * yPct);
+        const sw = Math.floor(img.width * wPct);
+        const sh = Math.floor(img.height * hPct);
+        const canvas = document.createElement('canvas');
+        canvas.width = sw;
+        canvas.height = sh;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+        resolve(canvas.toDataURL('image/png'));
+      }catch(e){ resolve(null); }
+    };
+    img.onerror = ()=>resolve(null);
+    img.src = dataUrl;
+  });
+}
+
+function extractRazonFromCropText(text){
+  const junk = /^cod\.?\s*\d*\.?$|^[a-z]$|^\d+$|^original$|^duplicado$|^triplicado$|^factura$/i;
+  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
+  for(const line of lines){
+    if(line.length>=3 && /[a-záéíóúñ]{3,}/i.test(line) && !junk.test(line)){
+      return line;
+    }
+  }
+  return null;
 }
 
 async function pdfFirstPageToImage(base64){
