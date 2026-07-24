@@ -640,7 +640,7 @@ async function extractData(){
     }else{
       imageDataUrl = 'data:' + currentFile.mediaType + ';base64,' + currentFile.base64;
     }
-    const result = await Tesseract.recognize(imageDataUrl, 'spa');
+    const result = await Tesseract.recognize(await preprocessImage(imageDataUrl), 'spa');
     const parsed = parseInvoiceText(result.data.text);
     document.getElementById('fRazon').value = parsed.razonSocial || '';
     document.getElementById('fMonto').value = parsed.monto !== null ? parsed.monto : '';
@@ -674,6 +674,32 @@ async function pdfFirstPageToImage(base64){
   return canvas.toDataURL('image/png');
 }
 
+function preprocessImage(dataUrl){
+  return new Promise((resolve, reject)=>{
+    const img = new Image();
+    img.onload = ()=>{
+      try{
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const d = imgData.data;
+        for(let i=0;i<d.length;i+=4){
+          const gray = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+          const val = gray < 150 ? Math.max(0, gray-30) : Math.min(255, gray+40);
+          d[i]=d[i+1]=d[i+2]=val;
+        }
+        ctx.putImageData(imgData, 0, 0);
+        resolve(canvas.toDataURL('image/png'));
+      }catch(e){ resolve(dataUrl); }
+    };
+    img.onerror = ()=>resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
 function parseArgNumber(s){
   const clean = s.replace(/\./g,'').replace(',', '.');
   const n = parseFloat(clean);
@@ -682,29 +708,36 @@ function parseArgNumber(s){
 
 function parseInvoiceText(text){
   const result = {razonSocial:null, monto:null, fecha:null, compNro:null};
+  const norm = text.replace(/\r/g,'');
 
-  // Comp. Nro (ej: "Comp. Nro: 00000065" o "0001-00000065")
-  let m = text.match(/comp\.?\s*n[roº°]?\.?\s*:?\s*([0-9]{3,5}[\s\-]?[0-9]{4,8})/i);
-  if(!m) m = text.match(/([0-9]{4,5}\s*-\s*[0-9]{6,8})/);
+  // --- Comp. Nro (formato AFIP: "Comp. Nro: 00000065" o "0001-00000065") ---
+  let m = norm.match(/comp\.?\s*n[roº°]?\.?\s*:?\s*([0-9]{3,5}[\s\-]?[0-9]{4,8})/i);
+  if(!m) m = norm.match(/([0-9]{4,5}\s*-\s*[0-9]{6,8})/);
   if(m) result.compNro = m[1].replace(/\s+/g,'');
 
-  // Fecha (dd/mm/yyyy o dd-mm-yyyy)
-  m = text.match(/(\d{2})[\/\-.](\d{2})[\/\-.](\d{4})/);
+  // --- Fecha (prioriza "Fecha de Emisión") ---
+  m = norm.match(/fecha\s*(?:de\s*emisi[oó]n)?\s*:?\s*(\d{2})[\/\-.](\d{2})[\/\-.](\d{4})/i);
+  if(!m) m = norm.match(/(\d{2})[\/\-.](\d{2})[\/\-.](\d{4})/);
   if(m) result.fecha = m[3]+'-'+m[2]+'-'+m[1];
 
-  // Monto: busca "Total" seguido de un número, se queda con la última aparición
-  const totalMatches = [...text.matchAll(/total[^0-9]{0,15}([\d]{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?)/gi)];
-  if(totalMatches.length){
-    result.monto = parseArgNumber(totalMatches[totalMatches.length-1][1]);
+  // --- Monto: prioriza "Importe Total", evita agarrar "Subtotal" ---
+  let montoMatches = [...norm.matchAll(/importe\s*total[^0-9]{0,15}\$?\s*([\d]{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?)/gi)];
+  if(montoMatches.length===0){
+    montoMatches = [...norm.matchAll(/(?<!sub)(?<!sub )total[^0-9]{0,15}\$?\s*([\d]{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?)/gi)];
   }
+  if(montoMatches.length) result.monto = parseArgNumber(montoMatches[montoMatches.length-1][1]);
 
-  // Razón social: primera línea con texto "razonable" que no sea un rótulo típico de factura
-  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
-  for(const line of lines){
-    if(line.length>4 && line.length<60 && /[a-záéíóúñ]/i.test(line) &&
-       !/factura|comprobante|original|duplicado|cuit|iva|fecha|c\.?u\.?i\.?t/i.test(line)){
-      result.razonSocial = line;
-      break;
+  // --- Razón social: busca la etiqueta explícita primero ---
+  m = norm.match(/raz[oó]n\s*social\s*:?\s*([^\n]{3,60})/i);
+  if(m) result.razonSocial = m[1].trim();
+  if(!result.razonSocial){
+    const lines = norm.split('\n').map(l=>l.trim()).filter(Boolean);
+    for(const line of lines){
+      if(line.length>4 && line.length<60 && /[a-záéíóúñ]/i.test(line) &&
+         !/factura|comprobante|original|duplicado|cuit|iva|fecha|c\.?u\.?i\.?t/i.test(line)){
+        result.razonSocial = line;
+        break;
+      }
     }
   }
   return result;
