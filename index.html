@@ -740,9 +740,9 @@ function parseInvoiceText(text){
   }
   if(!result.razonSocial){
     const lines = norm.split('\n').map(l=>l.trim()).filter(Boolean);
+    const junkPattern = /universal\s*assist|^cod\.?\s*\d*\.?$|^[a-z]$|^\d+$|factura|comprobante|^original$|^duplicado$|^triplicado$|cuit|iva\b|fecha|domicilio|c\.?u\.?i\.?t|punto\s*de\s*venta|comp\.?\s*n|ingresos\s*brutos|condici[oó]n|per[ií]odo/i;
     for(const line of lines){
-      if(line.length>3 && line.length<60 && /[a-záéíóúñ]/i.test(line) &&
-         !/universal\s*assist|factura|comprobante|original|duplicado|triplicado|cuit|iva\b|fecha|domicilio|c\.?u\.?i\.?t/i.test(line)){
+      if(line.length>4 && line.length<60 && /[a-záéíóúñ]{3,}/i.test(line) && !junkPattern.test(line)){
         result.razonSocial = line;
         break;
       }
