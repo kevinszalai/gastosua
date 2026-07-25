@@ -189,6 +189,14 @@
   .field input:focus,.field select:focus,.field textarea:focus{outline:none;border-color:var(--azul);}
   .field textarea{resize:vertical;min-height:60px;}
   .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  .area-toggle{display:flex;gap:8px;flex-wrap:wrap;}
+  .area-btn{
+    flex:1;min-width:70px;padding:10px 8px;border-radius:9px;border:1.5px solid var(--border);
+    background:#fff;color:var(--text-dim);font-family:inherit;font-size:13px;font-weight:600;
+    cursor:pointer;transition:.15s;
+  }
+  .area-btn:hover{border-color:var(--azul);color:var(--azul);}
+  .area-btn.active{background:var(--azul);border-color:var(--azul);color:#fff;}
   .modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:20px;}
   .manual-link{background:none;border:none;color:var(--azul);font-size:12.5px;cursor:pointer;font-weight:600;text-decoration:underline;padding:0;}
   .err{background:#FFF0F3;color:var(--fucsia);border-radius:8px;padding:9px 12px;font-size:12.5px;margin-bottom:14px;}
@@ -269,12 +277,13 @@
       </div>
       <div class="field">
         <label>Área</label>
-        <select id="fArea">
-          <option>Retail</option>
-          <option>Affinity</option>
-          <option>Brokers</option>
-          <option>Otras</option>
-        </select>
+        <div class="area-toggle" id="fAreaGroup">
+          <button type="button" class="area-btn" data-area="Retail">Retail</button>
+          <button type="button" class="area-btn" data-area="Affinity">Affinity</button>
+          <button type="button" class="area-btn" data-area="Brokers">Brokers</button>
+          <button type="button" class="area-btn" data-area="Otras">Otras</button>
+        </div>
+        <input type="hidden" id="fArea" value="Retail">
       </div>
       <div class="field">
         <label>Info adicional</label>
@@ -571,8 +580,17 @@ const errEl = document.getElementById('err');
 function openModal(){
   overlay.classList.add('show');
   resetModal();
-  document.getElementById('fArea').value = AREAS.includes(currentTab) ? currentTab : 'Retail';
+  setAreaSelection(AREAS.includes(currentTab) ? currentTab : 'Retail');
 }
+function setAreaSelection(area){
+  document.getElementById('fArea').value = area;
+  document.querySelectorAll('.area-btn').forEach(b=>{
+    b.classList.toggle('active', b.dataset.area===area);
+  });
+}
+document.querySelectorAll('.area-btn').forEach(b=>{
+  b.addEventListener('click', ()=> setAreaSelection(b.dataset.area));
+});
 function closeModal(){ overlay.classList.remove('show'); }
 function resetModal(){
   currentFile = null;
@@ -643,7 +661,7 @@ async function extractData(){
 
     // Recorte de la zona superior izquierda: ahí siempre está la razón social
     // del proveedor en este tipo de comprobante (encabezado, antes de la caja COD/letra).
-    const croppedRaw = await cropRegion(imageDataUrl, 0, 0, 0.65, 0.10);
+    const croppedRaw = await cropRegion(imageDataUrl, 0, 0, 0.50, 0.12);
 
     const [fullResult, cropResult] = await Promise.all([
       Tesseract.recognize(await preprocessImage(imageDataUrl), 'spa'),
@@ -696,7 +714,7 @@ function cropRegion(dataUrl, xPct, yPct, wPct, hPct){
 }
 
 function extractRazonFromCropText(text){
-  const junk = /^cod\.?\s*\d*\.?$|^[a-z]$|^\d+$|^original$|^duplicado$|^triplicado$|^factura$/i;
+  const junk = /^cod\.?\s*\d*\.?$|^[a-z]$|^\d+$|^original$|^duplicado$|^triplicado$|fact/i;
   const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
   for(const line of lines){
     if(line.length>=3 && /[a-záéíóúñ]{3,}/i.test(line) && !junk.test(line)){
