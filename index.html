@@ -149,6 +149,14 @@
   .empty b{display:block;color:var(--azul-oscuro);font-size:15px;margin-bottom:4px;}
   .del-btn{background:none;border:none;cursor:pointer;color:#C7D2D9;font-size:16px;padding:4px;}
   .del-btn:hover{color:var(--fucsia);}
+  .edit-btn{background:none;border:none;cursor:pointer;color:#C7D2D9;font-size:15px;padding:4px;}
+  .edit-btn:hover{color:var(--azul);}
+  .budget-banner{
+    padding:12px 16px;border-radius:12px;font-size:13px;font-weight:600;margin-bottom:14px;
+    display:flex;align-items:center;gap:8px;
+  }
+  .budget-banner.warn{background:#FFF4E5;color:#B45900;border:1px solid #FFD9A0;}
+  .budget-banner.over{background:#FFE8ED;color:#C7002F;border:1px solid #FFC2CF;}
 
   /* ---- modal ---- */
   .overlay{
@@ -235,7 +243,7 @@
 <!-- Modal -->
 <div class="overlay" id="overlay">
   <div class="modal">
-    <h2>Cargar factura</h2>
+    <h2 id="modalTitle">Cargar factura</h2>
     <p class="sub">Subí la imagen o PDF y detectamos los datos automáticamente. Después revisá y guardá.</p>
 
     <div id="err" class="err" style="display:none;"></div>
@@ -340,6 +348,7 @@ let budgets = {Retail:0,Affinity:0,Brokers:0,Otras:0};
 let currentTab = 'Retail';
 let filterArea = 'todas';
 let currentFile = null; // {base64, mediaType, isPdf, name}
+let editingId = null; // id de la factura en edición, null si es una carga nueva
 
 // Tu Google Sheet es la única fuente de verdad: estos valores por defecto
 // apuntan a tu Apps Script. Se pueden cambiar desde "⚙ Sincronización".
@@ -437,8 +446,14 @@ function renderAreaView(area){
   const remaining = budget - spent;
   const list = invoices.filter(i=>i.area===area).sort((a,b)=> (b.fechaSubida||'').localeCompare(a.fechaSubida||''));
   const c = AREA_COLORS[area];
+  const banner = pct>=100
+    ? '<div class="budget-banner over">⚠ Superaste el presupuesto de '+area+' en '+fmtMoney(Math.abs(remaining))+'.</div>'
+    : (budget>0 && pct>=90
+      ? '<div class="budget-banner warn">⚠ Estás por superar el presupuesto de '+area+' — ya usaste el '+Math.round(pct)+'%.</div>'
+      : '');
 
   document.getElementById('viewArea').innerHTML = `
+    ${banner}
     <div class="budget-card">
       <div class="gauge-wrap">
         ${gaugeSVG(pct, c.fg)}
@@ -478,7 +493,7 @@ function renderAreaView(area){
     showToast('Presupuesto actualizado');
   });
   document.getElementById('exportArea').addEventListener('click', ()=>exportExcel(list, area));
-  bindDeleteButtons();
+  bindRowActions();
 }
 
 function renderTodosView(){
@@ -505,7 +520,7 @@ function renderTodosView(){
     renderTodosView();
   });
   document.getElementById('exportTodos').addEventListener('click', ()=>exportExcel(sorted, filterArea==='todas'?'Todas':filterArea));
-  bindDeleteButtons();
+  bindRowActions();
 }
 
 function tableHTML(list, showArea){
@@ -528,7 +543,7 @@ function tableHTML(list, showArea){
           ${showArea?`<td><span class="area-pill" style="background:${c.bg};color:${c.fg}">${i.area}</span></td>`:''}
           <td class="info-cell">${escapeHTML(i.infoAdicional||'—')}</td>
           <td class="comp mono">${fmtDateShort(i.fechaSubida)}</td>
-          <td><button class="del-btn" data-id="${i.id}" title="Eliminar">🗑</button></td>
+          <td><button class="edit-btn" data-id="${i.id}" title="Editar">✏️</button><button class="del-btn" data-id="${i.id}" title="Eliminar">🗑</button></td>
         </tr>`;
       }).join('')}
     </tbody>
@@ -539,7 +554,10 @@ function escapeHTML(s){
   return String(s).replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 }
 
-function bindDeleteButtons(){
+function bindRowActions(){
+  document.querySelectorAll('.edit-btn').forEach(b=>{
+    b.addEventListener('click', ()=> openEditModal(b.dataset.id));
+  });
   document.querySelectorAll('.del-btn').forEach(b=>{
     b.addEventListener('click', async ()=>{
       if(!confirm('¿Eliminar esta factura?')) return;
@@ -602,8 +620,32 @@ const errEl = document.getElementById('err');
 
 function openModal(){
   overlay.classList.add('show');
+  editingId = null;
+  document.getElementById('modalTitle').textContent = 'Cargar factura';
   resetModal();
   setAreaSelection(AREAS.includes(currentTab) ? currentTab : 'Retail');
+}
+
+function openEditModal(id){
+  const inv = invoices.find(i=>i.id===id);
+  if(!inv) return;
+  editingId = id;
+  currentFile = null;
+  overlay.classList.add('show');
+  document.getElementById('modalTitle').textContent = 'Editar factura';
+  dropZone.style.display='none';
+  fileChip.style.display='none';
+  extractingEl.style.display='none';
+  manualLink.style.display='none';
+  errEl.style.display='none';
+  invoiceForm.style.display='block';
+  document.getElementById('fRazon').value = inv.razonSocial||'';
+  document.getElementById('fMonto').value = inv.monto||'';
+  document.getElementById('fFecha').value = inv.fecha||'';
+  document.getElementById('fComp').value = inv.compNro||'';
+  document.getElementById('fInfo').value = inv.infoAdicional||'';
+  document.getElementById('fSubida').value = fmtDateShort(inv.fechaSubida);
+  setAreaSelection(inv.area);
 }
 function setAreaSelection(area){
   document.getElementById('fArea').value = area;
@@ -841,22 +883,44 @@ function parseInvoiceText(text){
 
 invoiceForm.addEventListener('submit', async (e)=>{
   e.preventDefault();
-  const inv = {
-    id: uid(),
+  const areaSel = document.getElementById('fArea').value;
+  const compNroVal = document.getElementById('fComp').value.trim();
+
+  // Chequeo de duplicados: mismo Comp. Nro + Área (excluyendo la propia factura si estamos editando)
+  const dup = invoices.find(i => i.compNro && compNroVal && i.compNro === compNroVal && i.area === areaSel && i.id !== editingId);
+  if(dup){
+    const proceed = confirm('Ya existe una factura con el Comp. Nro "'+compNroVal+'" cargada en '+areaSel+' ('+(dup.razonSocial||'sin razón social')+'). ¿Querés cargarla de todos modos?');
+    if(!proceed) return;
+  }
+
+  const baseData = {
     razonSocial: document.getElementById('fRazon').value.trim(),
     monto: Number(document.getElementById('fMonto').value)||0,
     fecha: document.getElementById('fFecha').value,
-    compNro: document.getElementById('fComp').value.trim(),
-    area: document.getElementById('fArea').value,
-    infoAdicional: document.getElementById('fInfo').value.trim(),
-    fechaSubida: todayISO()
+    compNro: compNroVal,
+    area: areaSel,
+    infoAdicional: document.getElementById('fInfo').value.trim()
   };
-  invoices.push(inv);
-  closeModal();
-  currentTab = inv.area;
-  render();
-  await syncToSheet('add', { invoice: inv });
-  showToast('Factura guardada');
+
+  if(editingId){
+    const idx = invoices.findIndex(i=>i.id===editingId);
+    if(idx===-1) return;
+    const updated = Object.assign({}, baseData, { id: editingId, fechaSubida: invoices[idx].fechaSubida });
+    invoices[idx] = updated;
+    closeModal();
+    currentTab = updated.area;
+    render();
+    await syncToSheet('add', { invoice: updated }); // upsert por ID
+    showToast('Factura actualizada');
+  }else{
+    const inv = Object.assign({}, baseData, { id: uid(), fechaSubida: todayISO() });
+    invoices.push(inv);
+    closeModal();
+    currentTab = inv.area;
+    render();
+    await syncToSheet('add', { invoice: inv });
+    showToast('Factura guardada');
+  }
 });
 
 /* ---------- Sync settings modal ---------- */
