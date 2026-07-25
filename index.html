@@ -348,7 +348,7 @@ const DEFAULT_TOKEN = 'uakevin';
 let syncUrl = localStorage.getItem('gastosUA_syncUrl') || DEFAULT_SYNC_URL;
 let syncToken = localStorage.getItem('gastosUA_syncToken') || DEFAULT_TOKEN;
 
-const fmtMoney = n => (n||0).toLocaleString('es-AR',{style:'currency',currency:'ARS',maximumFractionDigits:0});
+const fmtMoney = n => (n||0).toLocaleString('es-AR',{style:'currency',currency:'ARS',minimumFractionDigits:2,maximumFractionDigits:2});
 const fmtDateShort = iso => { if(!iso) return '—'; const [y,m,d]=iso.split('-'); return d&&m&&y ? `${d}/${m}/${y}` : iso; };
 const uid = () => 'f'+Date.now()+Math.random().toString(36).slice(2,8);
 const todayISO = () => {
@@ -553,16 +553,31 @@ function bindDeleteButtons(){
 }
 
 function exportExcel(list, label){
-  const rows = list.map(i=>({
-    'Razón social': i.razonSocial||'',
-    'Monto (ARS)': Number(i.monto)||0,
-    'Fecha factura': fmtDateShort(i.fecha),
-    'Comp. Nro': i.compNro||'',
-    'Área': i.area||'',
-    'Info adicional': i.infoAdicional||'',
-    'Fecha de subida': fmtDateShort(i.fechaSubida)
-  }));
-  const ws = XLSX.utils.json_to_sheet(rows);
+  const total = list.reduce((s,i)=>s+(Number(i.monto)||0),0);
+  const isAreaSpecific = AREAS.includes(label);
+  const budget = isAreaSpecific ? (budgets[label]||0) : 0;
+
+  const aoa = [];
+  aoa.push(['Total de facturas', total]);
+  if(isAreaSpecific && budget > 0){
+    aoa.push(['Presupuesto asignado', budget]);
+    aoa.push(['Disponible', budget - total]);
+  }
+  aoa.push([]); // fila en blanco separadora
+  aoa.push(['Razón social','Monto (ARS)','Fecha factura','Comp. Nro','Área','Info adicional','Fecha de subida']);
+  list.forEach(i=>{
+    aoa.push([
+      i.razonSocial||'',
+      Number(i.monto)||0,
+      fmtDateShort(i.fecha),
+      i.compNro||'',
+      i.area||'',
+      i.infoAdicional||'',
+      fmtDateShort(i.fechaSubida)
+    ]);
+  });
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws['!cols'] = [{wch:28},{wch:14},{wch:14},{wch:14},{wch:12},{wch:32},{wch:14}];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Gastos');
