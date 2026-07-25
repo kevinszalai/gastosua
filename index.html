@@ -349,7 +349,13 @@ let syncToken = localStorage.getItem('gastosUA_syncToken') || DEFAULT_TOKEN;
 const fmtMoney = n => (n||0).toLocaleString('es-AR',{style:'currency',currency:'ARS',maximumFractionDigits:0});
 const fmtDateShort = iso => { if(!iso) return '—'; const [y,m,d]=iso.split('-'); return d&&m&&y ? `${d}/${m}/${y}` : iso; };
 const uid = () => 'f'+Date.now()+Math.random().toString(36).slice(2,8);
-const todayISO = () => new Date().toISOString().slice(0,10);
+const todayISO = () => {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth()+1).padStart(2,'0');
+  const dd = String(d.getDate()).padStart(2,'0');
+  return yyyy + '-' + mm + '-' + dd;
+};
 const todayDisplay = () => new Date().toLocaleDateString('es-AR');
 
 function showToast(msg){
